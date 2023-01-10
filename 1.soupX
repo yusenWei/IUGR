@@ -23,13 +23,13 @@ standard10x = function(dat,nPCs=50,res=1.0,verbose=FALSE){
 scRNA <- standard10x(scRNA,nPCs = 30,res = 0.5)
 cl <- data.frame(cell=rownames(scRNA@meta.data),cluster=scRNA@meta.data$seurat_clusters)
 
-## Read matrix data and binning results
-sc <- load10X('sample/')
-sc <- setClusters(sc,cl$cluster)
-
-## Automatic estimation of environmental expressions
-sc = autoEstCont(sc)
-out = adjustCounts(sc)
-
-## Output matrix file
-DropletUtils::write10xCounts("sample_soupx", out)
+## Read matrix data and binning results, Automatic estimation of environmental expressions,out
+assays <- dir("../rawdata/")
+dir <- paste0("../rawdata/", assays)
+samples_name = c( 'IUGR1','IUGR2','IUGR3','IUGR4','NBW1', 'NBW2', 'NBW3', 'NBW4')
+for(i in 1:length(dir)){
+  sc <- load10X(dir[i])
+  sc = autoEstCont(sc)
+  out = adjustCounts(sc)
+  DropletUtils::write10xCounts(samples_name[i], out)
+}
