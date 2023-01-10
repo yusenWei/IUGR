@@ -1,0 +1,47 @@
+#loom   python
+cellranger_gtf=$HOME/reference/scgenome.gtf
+rmsk_gtf=$HOME/reference/Sus_repeat_rmsk.gtf
+cellranger_outDir=/ifs/home/yusenwei/data/project1/
+velocyto run10x -m $rmsk_gtf  $cellranger_outDir $cellranger_gtf
+
+import anndata
+import scvelo as scv
+import pandas as pd
+import numpy as np
+import matplotlib as plt
+import scanpy as sc
+import os
+
+NBW1 = anndata.read_loom("./data/project1/N1/velocyto/N1.loom")
+NBW2 = anndata.read_loom("./data/project1/N2/velocyto/N2.loom")
+NBW3 = anndata.read_loom("./data/project1/N3/velocyto/N3.loom")
+IUGR1 = anndata.read_loom("./data/project1/R1/velocyto/R1.loom")
+IUGR2 = anndata.read_loom("./data/project1/R2/velocyto/R2.loom")
+IUGR3 = anndata.read_loom("./data/project1/R3/velocyto/R3.loom")
+
+barcodes = [bc.split(':')[1] for bc in NBW1.obs.index.tolist()] 
+barcodes=[bc[0:len(bc)-1]+'-1' for bc in barcodes]
+barcodes=['NBWn_'+ bc[0:len(bc)] for bc in barcodes]
+NBW1.obs.index = barcodes
+NBW1.var_names_make_unique()
+
+barcodes = [bc.split(':')[1] for bc in NBW1.obs.index.tolist()] 
+barcodes=[bc[0:len(bc)-1]+'-1' for bc in barcodes]
+barcodes=['IUGRn_'+ bc[0:len(bc)] for bc in barcodes]
+NBW1.obs.index = barcodes
+NBW1.var_names_make_unique()
+
+ldata= NBW1.concatenate([NBW2,NBW4,IUGR1,IUGR2,IUGR4])
+adata=sc.read_h5ad('./data/project1/KC.h5ad')
+adata= scv.utils.merge(adata,ldata)
+sc.pl.umap(adata,color='celltype1',frameon=False,legend_loc='on data',title='')
+scv.pp.filter_and_normalize(adata,min_shared_counts=20,n_top_genes=2000)
+scv.pp.moments(adata,n_pcs=30,n_neighbors=30)
+scv.tl.recover_dynamics(adata)
+scv.tl.velocity(adata,mode='dynamical')
+scv.tl.velocity_graph(adata)
+scv.pl.velocity_embedding_stream(adata,basis='umap',color='celltype1', title='', smooth=.8, min_mass=4)
+scv.tl.latent_time(adata)
+scv.pl.scatter(adata,color='latent_time',color_map='gnuplot',size=80)
+top_genes=adata.var['fit_likelihood'].sort_values(ascending=False).index[:300]
+scv.pl.heatmap(adata,var_names=top_genes,sortby='latent_time',col_color='celltype1',n_convolve=100)
