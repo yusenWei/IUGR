@@ -1,0 +1,188 @@
+library(plyr)
+library(permute)
+library(data.table)
+library(SCopeLoomR)
+library(SCENIC)
+
+cellInfo <- data.frame(KC@meta.data)
+colnames(cellInfo)[which(colnames(cellInfo)=="orig.ident")] <- "sample"
+colnames(cellInfo)[which(colnames(cellInfo)=="celltype1")] <- "CellType"
+colnames(cellInfo)[which(colnames(cellInfo)=="celltype1.group")] <- "celltype1.group"
+cellInfo <- cellInfo[,c("sample","CellType","celltype1.group")]
+saveRDS(cellInfo, "s1_cell.info.rds")
+
+exprMat <- as.matrix(scRNA2@assays$RNA@counts)
+#source("utils/add_cellAnnotation.R")
+loom <- build_loom("s1_exprMat.loom", dgem=exprMat)
+#loom <- add_cellAnnotation(loom, cell.info)
+close_loom(loom)
+### pyscenic 
+## s2_runPySCENIC.sh 
+## inputs
+f_loom_path_pig=output/s1_exprMat.loom
+
+## outputs
+grn_output=output/s2_1.adj.tsv
+ctx_output=output/s2_1.reg.tsv
+f_pyscenic_output=output/s2_1.pyscenic.loom
+
+## reference
+f_tfs=../reference/cisTarget/hs_hgnc_tfs.txt
+f_motif_path=../reference/cisTarget/motifs-v9-nr.hgnc-m0.001-o0.0.tbl
+f_db_names=`find ../reference/cisTarget/ -name "hg38*.feather"`
+
+arboreto_with_multiprocessing.py \
+    $f_loom_path_pig \
+    $f_tfs \
+    --method genie3 \
+    --output $grn_output \
+    --num_workers 40 \
+    --seed 777
+
+pyscenic ctx \
+    $grn_output \
+    $f_db_names \
+    --annotations_fname $f_motif_path \
+    --expression_mtx_fname $f_loom_path_pig \
+    --output $ctx_output \
+    --num_workers 10
+    ## Note:
+    ## The reason why I didn't use `--mask_dropouts` parameters:
+    ## In R version of SCENIC, mask dropouts is False (default when pySCENIC>0.9.6, current version: 0.10.1).
+    ## Here we match the behavior of R version.
+
+
+# ## set TMPDIR to current path, in case of no enough disk space on /tmp/
+export TMPDIR=`pwd`
+
+pyscenic aucell \
+    $f_loom_path_pig \
+    $ctx_output \
+    --output $f_pyscenic_output \
+    --num_workers 40 \
+    --seed 777
+
+bash s2_runPySCENIC.sh
+
+## bash ./output/s3_postSCENIC.sh
+f_loom_path_scenic=output/s2_1.pyscenic.loom
+ctx_output=output/s2_1.reg.tsv
+sample_name=output/s3_1
+threads=40
+min_regulon_size=10
+python output/s3_postSCENIC.py $f_loom_path_scenic $ctx_output $sample_name $threads $min_regulon_size
+
+bash ./output/s3_postSCENIC.sh
+# f_loom_path_scenic=output/s2_1.pyscenic.loom
+# ctx_output=output/s2_1.reg.tsv
+# sample_name=output/s3_1
+# threads=40
+# min_regulon_size=10
+# python output/s3_postSCENIC.py $f_loom_path_scenic $ctx_output $sample_name $threads $min_regulon_size
+
+library(data.table)
+library(pbapply)
+library(plyr)
+library(philentropy)
+library(ggplot2)
+library(ggrepel)
+library(latex2exp)
+
+rasMat <- fread("s3_1.AUCell.txt", sep = "\t", header = T, data.table = F) # data.frame
+rownames(rasMat) <- rasMat$V1
+colnames(rasMat) <- sub("(+)", "", colnames(rasMat), fixed = T)
+rasMat <- rasMat[, -1]
+saveRDS(rasMat, "s5_1.rasMat.rds")
+
+cell.info <- readRDS("s1_cell.info.rds")
+cell.types <- names(table(cell.info$CellType))
+ctMat <- lapply(cell.types, function(i) {
+  as.numeric(cell.info$CellType== i)
+})
+ctMat <- do.call(cbind, ctMat)
+colnames(ctMat) <- cell.types
+rownames(ctMat) <- rownames(cell.info)
+
+rssMat <- pblapply(colnames(rasMat), function(i) {
+  sapply(colnames(ctMat), function(j) {
+    1 - JSD(rbind(rasMat[, i], ctMat[, j]), unit = 'log2', est.prob = "empirical")
+  })
+})
+rssMat <- do.call(rbind, rssMat)
+rownames(rssMat) <- colnames(rasMat)
+colnames(rssMat) <- colnames(ctMat)
+saveRDS(rssMat, "s5_1.rssMat.rds")
+rssMat <- readRDS("s5_1.rssMat.rds")
+binMat <- read.table("output/s3_1.binary_mtx.txt", sep = "\t", header = T, row.names = 1, check.names = FALSE)
+colnames(binMat) <- sub("(+)", "", colnames(binMat), fixed = T)
+## Regulon Rank Plot
+source("plotRegulonRank.R")
+# plotRegulonRank.R
+PlotRegulonRank <- function(rssMat, cell.type, topn=5) {
+  data <- data.frame(
+    Regulons = 1:nrow(rssMat),
+    RSS = sort(rssMat[, cell.type], decreasing = T),
+    label = sub("(+)", "", names(sort(rssMat[, cell.type], decreasing = T)), fixed = T)
+  )
+
+  data$pt.col <- ifelse(data$Regulons <= topn, "#007D9B", "#BECEE3")
+  data <- head(data, n=200)
+  data.label <- head(data, n=topn)
+  
+  ggplot(data, aes(Regulons, RSS)) + 
+    geom_point(size=3, color=data$pt.col) + 
+    ggrepel::geom_text_repel(inherit.aes = FALSE, data = data.label, aes(Regulons, RSS, label=label), size=4) + 
+    ggtitle(cell.type) + ylab("Specificity score") + 
+    theme_bw(base_size = 12) + 
+    theme(panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(),
+          axis.line = element_line(color="black"),
+          axis.ticks = element_line(color="black"),
+          axis.text = element_text(color = "black"),
+          plot.title = element_text(hjust = .5)
+          )
+}
+
+PlotRegulonRank(rssMat, "Kupffer cells_NBW",topn = 5)
+PlotRegulonRank(rssMat, "KC_IUGR")
+
+scRNA[["binRegulon"]] <- CreateAssayObject(counts = t(binMat))
+scRNA <- AddMetaData(scRNA,metadata = binMat)
+FeaturePlot(scRNA,features = "FOXF1",split.by = "group")
+
+PRDM1.seek <- read.csv("../seek_results/PRDM1_SEEK.txt", sep = "\t", header = T)
+SeekPlot <- function(seek.res, key.words){
+  seek.res$Related <- grepl(key.words, seek.res$Description, ignore.case = T)
+  
+  data.use <- data.frame(
+    Dataset = seek.res$Rank,
+    P = -log10(seek.res$Coexpression.PValue),
+    Related = seek.res$Related & seek.res$Coexpression.PValue < 0.01
+  )
+  m = sum(seek.res$Related)
+  n = sum(data.use$Related)
+  M = nrow(seek.res)
+  N = sum(seek.res$Coexpression.PValue < 0.01)
+  fisher.res <- fisher.test(matrix(c(n,m-n,N-n,M-N-m+n), ncol = 2), alternative = "greater")
+  max.p <- max(data.use$P[is.finite(data.use$P)])
+  data.use$P <- ifelse(is.finite(data.use$P), data.use$P, max.p)
+  
+  ggplot(data.use, aes(Dataset, P)) + 
+    geom_point(color="#4590CE", size=3) + 
+    geom_point(inherit.aes = F, data = subset(data.use, Related), 
+               aes(Dataset, P), color="#E2AE2D", size=3) + 
+    geom_hline(yintercept=2, color="grey", size=1) + 
+    annotate("text", x=Inf, y=Inf, hjust=1.3, vjust=8.5, label=paste0("(", n, " out of ", m, ")")) + 
+    annotate("text", x=Inf, y=Inf, hjust=1.4, vjust=10, label=paste0("p=", signif(fisher.res$p.value, 3))) + 
+    ylab(TeX("-log_{10}(p-value)")) + 
+    ggtitle("") +
+    theme_bw(base_size = 15) + 
+    theme(panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(),
+          axis.line = element_line(color="black"),
+          axis.ticks = element_line(color="black"),
+          axis.text = element_text(color = "black"),
+          plot.title = element_text(hjust = .5)
+    )
+}
+SeekPlot(PRDM1.seek, "(hepatic)|(macro)") 
