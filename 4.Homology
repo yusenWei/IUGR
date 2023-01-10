@@ -1,0 +1,340 @@
+library(biomaRt)
+human <- useMart('ensembl',dataset = "hsapiens_gene_ensembl")
+pig<- useMart('ensembl',dataset =  "sscrofa_gene_ensembl")
+pig.gene <- rownames(scRNA)
+pig.gene <- as.data.frame(pig.gene)
+m2h.g <- getLDS(attributes = c("hgnc_symbol"),filters = "hgnc_symbol", values = pig.gene,mart = pig,
+                attributesL = c("hgnc_symbol"),martL = human,uniqueRows = T)
+
+sus <- subset(sus,features = m2h.g$HGNC.symbol)
+
+#human@assays$RNA@key <- "rna_"
+#human@assays$RNA@counts@Dimnames[[1]] <-human@assays$RNA@meta.features$feature_name
+#human@assays$RNA@data@Dimnames[[1]] <-human@assays$RNA@meta.features$feature_name
+#human@assays$RNA@counts@Dimnames[[1]] <- as.character(human@assays$RNA@counts@Dimnames[[1]])
+
+human <- subset(humansc,features = m2h.g$HGNC.symbol.1)
+## CNN
+scRNA.anchors <- FindIntegrationAnchors(object.list = c(sus,human))
+scRNA <- IntegrateData(anchorset = scRNA.anchors)
+scRNA <- ScaleData(scRNA, verbose = FALSE)
+## SCT+CNN
+
+scRNAlist <- list(sus,humansc)
+scRNAlist <- parallel::mclapply(scRNAlist,FUN = function(x)SCTransform(x,method="glmGamPoi",vars.to.regress=c("percent_mito","G2M.Score","S.Score")),mc.cores = 1)
+scRNA.features <- SelectIntegrationFeatures(scRNAlist, nfeatures = 3000)
+scRNAlist <- PrepSCTIntegration(scRNAlist, anchor.features = scRNA.features)
+scRNA.anchors <- FindIntegrationAnchors(object.list = scRNAlist,normalization.method = "SCT",anchor.features = scRNA.features)
+scRNA.sct.int <- IntegrateData(scRNA.anchors, normalization.method="SCT")
+plan("multisession",worker=4)
+plan("sequential")
+
+scRNA <- RunPCA(scRNA.sct.int, npcs = 50, verbose = FALSE)
+pct <- scRNA@reductions$pca@stdev / 
+  sum(scRNA@reductions$pca@stdev) * 100
+cum <- cumsum(pct)
+co1 <- which(cum > 90 & pct < 5)[1]
+co2 <- sort(which((pct[1:length(pct)-1] - pct[2:length(pct)]) > 0.1), 
+            decreasing = T)[1] + 1
+pcs <- min(co1,co2)
+
+pc.num= 1:22
+scRNA <- scRNA  %>% RunUMAP(dims=1:18)
+
+g2m_genes = cc.genes$g2m.genes
+g2m_genes = CaseMatch(search = g2m_genes, match = rownames(sus))
+s_genes = cc.genes$s.genes
+s_genes = CaseMatch(search = s_genes, match = rownames(sus))
+sus <- CellCycleScoring(object=sus, g2m.features=g2m_genes, s.features=s_genes)
+
+
+g2m_genes = cc.genes$g2m.genes
+g2m_genes = CaseMatch(search = g2m_genes, match = rownames(humansc))
+s_genes = cc.genes$s.genes
+s_genes = CaseMatch(search = s_genes, match = rownames(humansc))
+humansc <- CellCycleScoring(object=humansc, g2m.features=g2m_genes, s.features=s_genes)
+
+g2m_genes = cc.genes$g2m.genes
+g2m_genes = CaseMatch(search = g2m_genes, match = rownames(sus))
+s_genes = cc.genes$s.genes
+s_genes = CaseMatch(search = s_genes, match = rownames(sus))
+sus <- CellCycleScoring(object=sus, g2m.features=g2m_genes, s.features=s_genes)
+
+human <- scRNAlist[[2]]
+sus <- scRNAlist[[1]]
+
+
+assays <- dir("humandata/")
+dir <- paste0("humandata/", assays)
+samples_name = c( 'healthy1A','healthy1B','healthy1C','healthy2A','healthy2B', 'healthy3A', 'healthy3B', 'healthy3C','healthy4A','healthy4B','healthy5')
+scRNAlist <- list()
+for(i in 1:length(dir)){
+  counts <- Read10X(data.dir = dir[i])
+  scRNAlist[[i]] <- CreateSeuratObject(counts, project=samples_name[i],
+                                       min.cells=3, min.features = 200)
+  scRNAlist[[i]] <- RenameCells(scRNAlist[[i]], add.cell.id = samples_name[i])
+}
+#table(scRNAlist$@meta.data$orig.ident)             
+names(scRNAlist) <- samples_name
+scRNAlist$healthy1A@meta.data$group <- 'human'
+scRNAlist$healthy1B@meta.data$group <- 'human'
+scRNAlist$healthy1C@meta.data$group <- 'human'
+scRNAlist$healthy2A@meta.data$group <- 'human'
+scRNAlist$healthy2B@meta.data$group <- 'human'
+scRNAlist$healthy3A@meta.data$group <- 'human'
+scRNAlist$healthy3B@meta.data$group <- 'human'
+scRNAlist$healthy3C@meta.data$group <- 'human'
+scRNAlist$healthy4A@meta.data$group <- 'human'
+scRNAlist$healthy4B@meta.data$group <- 'human'
+scRNAlist$healthy5@meta.data$group <- 'human'
+humansc <- merge(scRNAlist[[1]], scRNAlist[2:length(scRNAlist)])
+
+humansc <- subset(humansc,features=gene$gene)
+
+human.gene <- as.data.frame(rownames(humansc))
+pig.gene <- as.data.frame(rownames(sus))
+gene <- as.data.frame(intersect(human.gene$`rownames(humansc)`,pig.gene$`rownames(sus)`))
+colnames(gene)[1]<- "gene"
+
+
+assays <- dir("humandata/")
+dir <- paste0("humandata/", assays)
+samples_name = c( 'healthy1A','healthy1B','healthy1C','healthy2A','healthy2B', 'healthy3A', 'healthy3B', 'healthy3C','healthy4A','healthy4B','healthy5',
+                  'F15A1','F15A2','F15B1','F15B2','F16A','F16B')
+scRNAlist <- list()
+for(i in 1:length(dir)){
+  counts <- Read10X(data.dir = dir[i])
+  scRNAlist[[i]] <- CreateSeuratObject(counts, project=samples_name[i],
+                                       min.cells=3, min.features = 200)
+  scRNAlist[[i]] <- RenameCells(scRNAlist[[i]], add.cell.id = samples_name[i])
+}
+names(scRNAlist) <- samples_name
+scRNAlist$healthy1A@meta.data$group <- 'human'
+scRNAlist$healthy1B@meta.data$group <- 'human'
+scRNAlist$healthy1C@meta.data$group <- 'human'
+scRNAlist$healthy2A@meta.data$group <- 'human'
+scRNAlist$healthy2B@meta.data$group <- 'human'
+scRNAlist$healthy3A@meta.data$group <- 'human'
+scRNAlist$healthy3B@meta.data$group <- 'human'
+scRNAlist$healthy3C@meta.data$group <- 'human'
+scRNAlist$healthy4A@meta.data$group <- 'human'
+scRNAlist$healthy4B@meta.data$group <- 'human'
+scRNAlist$healthy5@meta.data$group <- 'human'
+scRNAlist$F15A1@meta.data$group <- 'human'
+scRNAlist$F15A2@meta.data$group <- 'human'
+scRNAlist$F15B1@meta.data$group <- 'human'
+scRNAlist$F15B2@meta.data$group <- 'human'
+scRNAlist$F16A@meta.data$group <- 'human'
+scRNAlist$F16B@meta.data$group <- 'human'
+humansc <- merge(scRNAlist[[1]], scRNAlist[2:length(scRNAlist)])
+humansc[["percent_mito"]] <- PercentageFeatureSet(humansc, pattern = "^MT-")
+HB.genes <- c("HBA1","HBA2","HBB","HBD","HBE1","HBG1","HBG2","HBM","HBQ1","HBZ")
+HB_m <- match(HB.genes, rownames(humansc@assays$RNA)) 
+HB.genes <- rownames(humansc@assays$RNA)[HB_m] 
+HB.genes <- HB.genes[!is.na(HB.genes)] 
+humansc[["percent.HB"]]<-PercentageFeatureSet(humansc, features=HB.genes) 
+VlnPlot(humansc,
+        features = c("nFeature_RNA", "nCount_RNA", "percent_mito","percent.HB"), 
+        pt.size = 0, 
+        ncol = 4)
+humansc <- subset(humansc, subset = percent_mito < 20)
+humansc <- subset(humansc,features = gene$gene)
+sus <- subset(sus,features=gene$gene)
+
+assays <- dir("rawdata/")
+dir <- paste0("rawdata/", assays)
+samples_name = c('IUGR1','IUGR2','IUGR3','IUGR4','NBW1', 'NBW2', 'NBW3', 'NBW4')
+scRNAlist <- list()
+for(i in 1:length(dir)){
+  counts <- Read10X(data.dir = dir[i])
+  scRNAlist[[i]] <- CreateSeuratObject(counts, project=samples_name[i],
+                                       min.cells=3, min.features = 200)
+  scRNAlist[[i]] <- RenameCells(scRNAlist[[i]], add.cell.id = samples_name[i])
+}
+names(scRNAlist) <- samples_name
+scRNAlist$IUGR1@meta.data$group <- 'pig'
+scRNAlist$IUGR2@meta.data$group <- 'pig'
+scRNAlist$IUGR3@meta.data$group <- 'pig'
+scRNAlist$IUGR4@meta.data$group <- 'pig'
+scRNAlist$NBW1@meta.data$group <- 'pig'
+scRNAlist$NBW2@meta.data$group <- 'pig'
+scRNAlist$NBW3@meta.data$group <- 'pig'
+scRNAlist$NBW4@meta.data$group <- 'pig'
+
+sus <- merge(scRNAlist[[1]], scRNAlist[2:length(scRNAlist)])
+mt.genes <-read.csv("mt_gene1.csv",header = T)
+kp=mt.genes$gtf %in% rownames(sus)
+mt.genes=mt.genes$gtf[kp]
+C<-GetAssayData(object = sus, slot = "counts")
+percent.mito <- Matrix::colSums(C[mt.genes,])/Matrix::colSums(C)*100
+sus <- AddMetaData(sus, percent.mito, col.name = "percent_mito")
+sus <- subset(sus, subset = nFeature_RNA < 6000  & percent_mito < 20)
+sus <- subset(sus,features = gene$gene)
+
+scRNA <- FindNeighbors(scRNA, reduction = "pca",dims = 1:18, verbose = FALSE)
+for (res in c(0.01, 0.05, 0.1, 0.2, 0.3, 0.5,0.8,1)) {
+  print(res)
+  scRNA <- FindClusters(scRNA, graph.name = "integrated_snn", 
+                        resolution = res, algorithm = 1)
+}
+colors <- c('#e41a1c','#377eb8','#4daf4a','#984ea3','#ff7f00','#ffff33','#a65628','#f781bf')
+names(colors) <- unique(colnames(scRNA@meta.data)[grep("integrated_snn_res", colnames(scRNA@meta.data))]) 
+clustree(scRNA@meta.data, prefix = "integrated_snn_res.") 
+DefaultAssay(scRNA) <- "RNA"
+scRNA <- NormalizeData(scRNA, normalization.method = "LogNormalize", scale.factor = 10000)
+scRNA <- ScaleData(scRNA, features = rownames(scRNA))
+Idents(scRNA) <- "integrated_snn_res.0.5"
+marker_cosg <- cosg(scRNA,groups='all',assay='RNA',slot='data',mu=1,n_genes_user=100)
+write.csv(marker_cosg[[1]],file='human_pig_markers.csv')
+
+
+new.cluster.ids <- c("NK/NKT cells","T cells", "T cells","Macrophage cells","NK/NKT cells",
+                     "Neutrophil-myeloid progenitors","Early/Mid erythroid","Monocytes",
+                     "B/Plasma cells","Endothelial cells","cDC","cDC","HSC",
+                     "NK/NKT cells","Macrophage cells","Myelocytes","Mesenchymal cells",
+                     "Early/Mid erythroid","Neutrophils","NK/NKT cells",
+                     "Cholangiocytes","Late erythroid","Basophils","Hepatocytes","B/Plasma cells",
+                     "T cells","NK/NKT cells","Hepatocytes")
+names(new.cluster.ids) <- levels(scRNA)
+scRNA <- RenameIdents(scRNA, new.cluster.ids)
+table(scRNA@active.ident)
+scRNA$celltype <- scRNA@active.ident
+
+color_cluster=c("#6AB3F4","#D459A2",
+                "#5A7FF8",
+                "#8747E0","#12C2C4",
+                "#B27EEC",
+                "#45CFCF","#EBA8A6","#FF6347","#F14764",
+                "#159CA1","#A21A6D",
+                "#EBA8A6","#e9148f",
+                "#32C35E","#91D0BE","#5AC722")
+names(color_cluster)=c("NK/NKT cells", "T cells",
+                       "Neutrophil-myeloid progenitors",
+                       "Monocytes", "cDC",
+                       "B/Plasma cells",
+                       "Mesenchymal cells","HSC","Endothelial cells","Macrophage cells",
+                       "Neutrophils","Myelocytes",
+                       "Hepatocytes","Cholangiocytes",
+                       "Basophils","Early/Mid erythroid","Late erythroid")
+
+umap = scRNA@reductions$umap@cell.embeddings %>% 
+  as.data.frame() %>%
+  cbind(cell_type = scRNA@meta.data$celltype)
+df.m=umap[,c(1:3)] 
+df.m <- df.m %>%
+  group_by(cell_type) %>%
+  summarise(UMAP_1 = median(UMAP_1),UMAP_2 = median(UMAP_2))
+p1= ggplot(umap, aes(x= UMAP_1 , y = UMAP_2 ,col = cell_type))+
+  geom_point(size = 0.5,shape=16) +
+  scale_color_manual(values = color_cluster)+ 
+  theme_classic()+
+  theme(panel.grid =element_blank(),
+        panel.border = element_blank(),
+        axis.text.y = element_blank(),
+        axis.ticks.y = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.text.x = element_blank())+
+  labs(x='UMAP1', y='UMAP2')+
+  ggrepel::geom_label_repel(aes(label = cell_type),
+                            data = df.m,
+                            size = 4,
+                            label.size = 1,
+                            segment.color = NA
+  )+ theme_dr()+theme(legend.position = "none") 
+ggsave(plot = p1,filename = "umap_human_pig.pdf",height = 8,width = 10)
+umap1 = scRNA@reductions$umap@cell.embeddings %>% 
+  as.data.frame() %>%
+  cbind(group = scRNA@meta.data$group)
+umap2 <-  umap1 %>% filter(group=="human")
+umap3 <-  umap1 %>% filter(group=="pig")
+p2= ggplot(umap2, aes(x= UMAP_1 , y = UMAP_2 ))+
+  geom_point(size = 0.5,shape=16,col="#58A4C3") +
+  theme_classic()+
+  theme(panel.grid =element_blank(),
+        panel.border = element_blank(),
+        axis.text.y = element_blank(),
+        axis.ticks.y = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.text.x = element_blank())+
+  labs(x='UMAP1', y='UMAP2')
+ggsave(plot = p2,filename = "umap_human.pdf",height = 8,width = 10)
+p3= ggplot(umap3, aes(x= UMAP_1 , y = UMAP_2 ))+
+  geom_point(size = 0.5,shape=16,col="#6778AE") +
+  theme_classic()+
+  theme(panel.grid =element_blank(),
+        panel.border = element_blank(),
+        axis.text.y = element_blank(),
+        axis.ticks.y = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.text.x = element_blank())+
+  labs(x='UMAP1', y='UMAP2')
+ggsave(plot = p3,filename = "umap_pig.pdf",height = 8,width = 10)
+
+markers <- FindAllMarkers(object = scRNA, only.pos = TRUE, min.pct = 0.5, 
+                          logfc.threshold = 0.5,test.use = "MAST")
+
+levels(scRNA) <- c("Early/Mid erythroid","Late erythroid",
+                   "Macrophage cells","Monocytes","cDC",
+                   "T cells","NK/NKT cells","B/Plasma cells","Neutrophil-myeloid progenitors",
+                   "Hepatocytes","Cholangiocytes",
+                   "Endothelial cells","Mesenchymal cells","HSC",
+                   "Basophils","Neutrophils","Myelocytes")
+levels(scRNA) <- c("Early/Mid erythroid_human","Early/Mid erythroid_pig","Late erythroid_human","Late erythroid_pig",
+                   "Macrophage cells_human","Macrophage cells_pig","Monocytes_human","Monocytes_pig","cDC_human","cDC_pig",
+                   "T cells_human","T cells_pig","NK/NKT cells_human","NK/NKT cells_pig","B/Plasma cells_human","B/Plasma cells_pig","Neutrophil-myeloid progenitors_human","Neutrophil-myeloid progenitors_pig",
+                   "Hepatocytes_human","Hepatocytes_pig","Cholangiocytes_human","Cholangiocytes_pig",
+                   "Endothelial cells_human","Endothelial cells_pig","Mesenchymal cells_human","Mesenchymal cells_pig","HSC_human","HSC_pig",
+                   "Basophils_human","Basophils_pig","Neutrophils_human","Neutrophils_pig","Myelocytes_human","Myelocytes_pig")
+
+top20 <- markers %>% group_by(cluster) %>% top_n(25, avg_log2FC)
+
+p3=DoHeatmap(scRNA,
+          features = as.character(unique(top20$gene)),
+          assay = 'RNA',label = F,draw.lines = T,group.colors = color_cluster)+ scale_fill_gradient2(low = '#0099CC',mid = 'white',high = '#CC0033')
+
+gene.marker <- c("GATA1","KLF1","AHSP",
+                 "BPGM","TMCC2","HMBS",
+                 "CD68","CD163","LGMN","TIMD4","VSIG4",
+                 "CD14","VCAN","SLC11A1",
+                 "CST3","PLD4","HLA-DRA","IFI30","HLA-DOB",
+                 "CD3E","CD3D","ITK","CD2","IL7R",
+                 "NKG7","CCL5","XCL1","CTSW","PRF1",
+                 "CD79A","CD79B","MZB1","BCL11A","JCHAIN",
+                 "MPO","MYB","MYC",
+                 "APOA2","APOA1","ALB","TTR",
+                 "KRT8","CLU","KRT18","EPCAM",
+                 "FCN2","OIT3","KDR","CCL14","STAB1",
+                 "HHIP","PTPRB","CLDN5","TM4SF1",
+                 "C7","DCN","HGF","IGFBP7",
+                 "GATA2",
+                 "CXCL8","SDS","MMP9",
+                 "S100A8","LTF","CSTA","S100A12")
+
+top30_table=unstack(top20, gene ~ cluster)
+names(top30_table)=gsub("X","cluster",names(top30_table))
+write.csv(top30_table,file='top30_markers_pig and human.csv')
+
+Idents(scRNA) <- "group"
+humansc <- subset(scRNA,ident="human")
+sus <- subset(scRNA,ident="pig")
+DefaultAssay(sus) <- "RNA"
+DefaultAssay(humansc) <- "RNA"
+sus <- NormalizeData(sus, normalization.method = "LogNormalize", scale.factor = 10000)
+humansc <- NormalizeData(humansc, normalization.method = "LogNormalize", scale.factor = 10000)
+
+Idents(sus) <- "celltype"
+Idents(humansc) <- "celltype"
+markers_sus <- FindAllMarkers(object = sus, only.pos = TRUE, min.pct = 0.5, 
+                          logfc.threshold = 0.5,test.use = "MAST")
+markers_human <- FindAllMarkers(object = humansc, only.pos = TRUE, min.pct = 0.5, 
+                              logfc.threshold = 0.5,test.use = "MAST")
+
+top30_pig <- markers_sus %>% group_by(cluster) %>% top_n(25, avg_log2FC)
+top30_table_pig=unstack(top30_pig, gene ~ cluster)
+names(top30_table_pig)=gsub("X","cluster",names(top30_table_pig))
+write.csv(top30_table_pig,file='top25_markers_pig.csv')
+
+top30_human <- markers_human %>% group_by(cluster) %>% top_n(25, avg_log2FC)
+top30_table_human=unstack(top30_human, gene ~ cluster)
+names(top30_table_human)=gsub("X","cluster",names(top30_table_human))
+write.csv(top30_table_human,file='top25_markers_human.csv')
