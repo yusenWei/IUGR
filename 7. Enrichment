@@ -1,0 +1,107 @@
+library(ggplot2)
+library(ggtheme)
+library(ggprism)
+library(limma)
+
+Idents(KC) <- 'celltype1.group'
+Idents(KC)
+expr <- AverageExpression(KC, assays = "RNA", slot = "data")[[1]]
+View(expr)
+expr <- expr[rowSums(expr)>0,]
+#exp  <- expr[,c(6,14)] 
+library(GSVA)
+geneSets <- split(genesets$gene, genesets$term)
+GSVA <- gsva(expr=as.matrix(exp), 
+                  gset.idx.list=genesets, 
+                  mx.diff=T, 
+                  kcdf="Gaussian", 
+                  parallel.sz=6)
+head(GSVA)
+#write.csv
+group <- factor(c(rep("NBW", 3), rep("IUGR", 3)), levels = c('NBW', 'IUGR'))
+design <- model.matrix(~0+group)
+colnames(design) = levels(factor(group))
+rownames(design) = colnames(GSVA)
+design
+compare <- makeContrasts(IUGR - NBW, levels=design)
+fit <- lmFit(GSVA, design)
+fit2 <- contrasts.fit(fit, compare)
+fit3 <- eBayes(fit2)
+Diff <- topTable(fit3, coef=1, number=80)
+head(Diff)
+## barplot
+dat_plot <- data.frame(id = row.names(Diff),
+                       t = Diff$t)
+
+#library(stringr)
+#dat_plot$id <- str_replace(dat_plot$id , "HALLMARK_","")
+dat_plot$threshold = factor(ifelse(dat_plot$t  >-1.5, ifelse(dat_plot$t >= 1.5 ,'Up','NoSignifi'),'Down'),levels=c('Up','Down','NoSignifi'))
+dat_plot <- dat_plot %>% arrange(t)
+dat_plot$id <- factor(dat_plot$id,levels = dat_plot$id)
+p <- ggplot(data = dat_plot,aes(x = id,y = t,fill = threshold)) +
+  geom_col()+
+  coord_flip() +
+  scale_fill_manual(values = c('Up'= '#36638a','NoSignifi'='#cccccc','Down'='#7bcd7b')) +
+  geom_hline(yintercept = c(-2,2),color = 'white',size = 0.5,lty='dashed') +
+  xlab('') + 
+  ylab('t value of GSVA score, tumour versus non-malignant') + #注意坐标轴旋转了
+  guides(fill="none")+ # 不显示图例
+  theme_prism(border = T) +
+  theme(
+    axis.text.y = element_blank(),
+    axis.ticks.y = element_blank()
+  )
+
+low1 <- dat_plot %>% filter(t < -2) %>% nrow()
+low0 <- dat_plot %>% filter( t < 0) %>% nrow()
+high0 <- dat_plot %>% filter(t < 2) %>% nrow()
+high1 <- nrow(dat_plot)
+
+p <- p + geom_text(data = dat_plot[1:low1,],aes(x = id,y = 0.1,label = id),
+                   hjust = 0,color = 'black') + 
+  geom_text(data = dat_plot[(low1 +1):low0,],aes(x = id,y = 0.1,label = id),
+            hjust = 0,color = 'grey') +
+  geom_text(data = dat_plot[(low0 + 1):high0,],aes(x = id,y = -0.1,label = id),
+            hjust = 1,color = 'grey') +
+  geom_text(data = dat_plot[(high0 +1):high1,],aes(x = id,y = -0.1,label = id),
+            hjust = 1,color = 'black')
+
+## AddmoduleSore
+gene.set= read.csv("./geneset_endo.csv",header = T)
+gene.set= gene.set[,2:3]
+gene.set=gene.set[gene.set$gene %in% rownames(Endo),]
+for (i in unique(gene.set$set)) {
+  gene.set_small=gene.set%>%filter(set==i)
+  genes.for.scoring <- list(gene.set_small$gene)
+  Endo <- AddModuleScore(object = Endo, features = genes.for.scoring, name = i)
+}
+a <- Endo@meta.data[,c("celltype1","signatureF")]
+a <-aggregate(x=a[,2],by=list(a$celltype1),FUN=mean)
+colnames(a)[1]<-"group"
+colnames(a)[2]<-"value"
+b<-t(a)
+colnames(b)<-a$group
+b<- apply(b, 2, as.numeric)
+b <- as.data.frame(rbind(rep(1.2,7),rep(0.3,7),b[2,]))
+library(fmsb)
+radarchart(df =b,seg = 3,cglty = 1,cglcol = "grey",pfcol = "grey",pcol = "black",pty = 32)
+ggplot(a, aes(x = Pseudotime, color = group)) +  geom_smooth(aes(y = TNF1),size=5,method = "gam") +theme_bw() + scale_color_manual(values = color_group)
+
+mytheme=theme_classic()+
+  theme(
+    axis.text.x.bottom = element_text(angle = 45,hjust = 1,size = 16,color = "black"),
+    axis.text.y.left = element_text(size = 16,color = "black"),
+    axis.title.y.left = element_blank(),
+    axis.title.x.bottom = element_blank(),
+    axis.ticks.length=unit(.2, "cm"),
+    plot.title = element_text(size = 18,hjust = 0.5),
+    legend.position = "none",
+  )
+ggplot(a,aes(cluster,M1_Polarization))+
+  ggdist::stat_halfeye(mapping = aes(fill=cluster),width = .6, .width = 0, justification = -.4, point_colour = NA,alpha=0.5) + 
+  geom_jitter(mapping = aes(color=cluster),width = .15, alpha = .1,size=0.05)+
+  geom_boxplot(width = .15, outlier.shape = NA,fill=NA,size=0.5)+
+  labs(title = "M2_Polarization")+  scale_fill_manual(values = color_cluster)+
+  scale_color_manual(values = color_cluster)+
+  scale_y_continuous(expand = c(0.02,0))+
+  scale_x_discrete(expand = c(0,0.3)) + mytheme +stat_compare_means(method = "wilcox.test",aes(label = ..p.signif..)) 
