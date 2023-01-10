@@ -1,0 +1,111 @@
+## Cellphone DB
+write.table(as.matrix(scRNA2@assays$RNA@data),'cellphone_count.txt',sep='\t',quote=F)
+meta_data <- cbind(rownames(scRNA2@meta.data),scRNA@meta.data[,'cell_type',drop=F])
+meta_data <- as.matrix(meta_data)
+write.table(meta_data,'cellphone_meta.txt',sep='\t',quote=F,row.names=F)
+## python
+cellphonedb method statistical_analysis cellphonedb_meta.txt cellphonedb_count.txt  --counts-data=gene_name
+cellphonedb plot dot_plot
+cellphonedb plot heatmap_plot cellphonedb_meta.txt
+
+## R
+pvalues=read.table(pfile,header = T,sep = "\t",stringsAsFactors = F)
+pvalues=pvalues[,c(2,12:dim(pvalues)[2])]
+RMpairs=names(sort(table(pvalues$interacting_pair))[sort(table(pvalues$interacting_pair)) > 1])
+pvalues=pvalues[!(pvalues$interacting_pair %in% RMpairs),]
+pvalues.df1=melt(pvalues,id="interacting_pair")
+colnames(pvalues.df1)=c("geneA_geneB","cellA_cellB","pvalue")
+pvalues.df1$neg_log10=-log10(pvalues.df1$pvalue)
+pvalues.df1$geneA_geneB_cellA_cellB=paste(pvalues.df1$geneA_geneB,pvalues.df1$cellA_cellB,sep = ",")
+  
+means=read.table(mfile,header = T,sep = "\t",stringsAsFactors = F)
+means=means[,c(2,12:dim(means)[2])]
+rmpairs=names(sort(table(means$interacting_pair))[sort(table(means$interacting_pair)) > 1])
+means=means[!(means$interacting_pair %in% rmpairs),]
+means.df1=melt(means,id="interacting_pair")
+colnames(means.df1)=c("geneA_geneB","cellA_cellB","means_exp")
+means.df1$geneA_geneB_cellA_cellB=paste(means.df1$geneA_geneB,means.df1$cellA_cellB,sep = ",")
+means.df1=means.df1[,c("geneA_geneB_cellA_cellB","means_exp")]
+  
+raw.df=merge(pvalues.df1,means.df1,by="geneA_geneB_cellA_cellB")
+raw.df$means_exp_log2=log2(raw.df$means_exp)
+
+raw.df%>%ggplot(aes(geneA_geneB,cellA_cellB))+geom_point(aes(size=neg_log10,color=means_exp_log2))+
+    scale_x_discrete("")+scale_y_discrete("")+
+    scale_color_gradientn(colours = rev(c("#A50026", "#D73027", "#F46D43", "#FDAE61","#FFFFB3","#ABD9E9", "#4575B4","#313695")))+
+    theme_bw()+
+    theme(axis.text.x.bottom = element_text(hjust = 1, vjust = 0.5, size=8, angle = 90))+
+    coord_flip()
+## Cellchat
+Idents(scRNA2) <- "group"
+sc.NBW <- subset(scRNA2, idents=c("NBW"))
+sc.IUGR <- subset(scRNA2, idents=c("IUGR"))
+cc1 <- createCellChat(sc.NBW@assays$RNA@data,meta = sc.NBW@meta.data,group.by = "celltype1")
+cc2 <- createCellChat(sc.IUGR@assays$RNA@data,meta = sc.IUGR@meta.data,group.by = "celltype1")
+
+cellchat <- cc1
+cellchat@DB <- CellChatDB.use
+cellchat <- subsetData(cellchat)
+cellchat <- identifyOverExpressedGenes(cellchat)  
+cellchat <- identifyOverExpressedInteractions(cellchat)  
+#cellchat <- projectData(cellchat,PPI.human) 
+cellchat <- computeCommunProb(cellchat,raw.use = TRUE,population.size = TRUE)  
+#cellchat <- filterCommunication(cellchat,min.cells = 5) 
+#df.net <- subsetCommunication(cellchat)
+cellchat <- computeCommunProbPathway(cellchat) 
+##df.net <- subsetCommunication(cellchat,slot.name="netP")
+cellchat <- aggregateNet(cellchat) 
+cellchat <- netAnalysis_computeCentrality(cellchat,slot.name = "netP") 
+#cellchat <- computeNetSimilarity(cellchat,type = "functional") 
+#library(uwot)
+#cellchat <- netEmbedding(cellchat,type = "functional",umap.method = 'uwot')
+#cellchat <- netClustering(cellchat,type="functional") 
+#cellchat <- computeNetSimilarity(cellchat,type = "structural") 
+#cellchat <- netEmbedding(cellchat,type = "structural",umap.method = 'uwot')
+#cellchat <- netClustering(cellchat,type="structural")
+cc1 <- cellchat
+
+cellchat <- cc2
+cellchat@DB <- CellChatDB.use
+cellchat <- subsetData(cellchat)
+cellchat <- identifyOverExpressedGenes(cellchat) 
+cellchat <- identifyOverExpressedInteractions(cellchat)
+#cellchat <- projectData(cellchat,PPI.human)
+cellchat <- computeCommunProb(cellchat,raw.use = TRUE,population.size = TRUE)
+#cellchat <- filterCommunication(cellchat,min.cells = 5)
+cellchat <- computeCommunProbPathway(cellchat)
+cellchat <- aggregateNet(cellchat)
+cellchat <- netAnalysis_computeCentrality(cellchat,slot.name = "netP")
+#cellchat <- computeNetSimilarity(cellchat,type = "functional")
+#cellchat <- netEmbedding(cellchat,type = "functional",umap.method = 'uwot')
+#cellchat <- netClustering(cellchat,type="functional")
+#cellchat <- computeNetSimilarity(cellchat,type = "structural")
+#cellchat <- netEmbedding(cellchat,type = "structural",umap.method = 'uwot')
+#cellchat <- netClustering(cellchat,type="structural")
+cc2 <- cellchat
+
+cc.list <- list(NBW=cc1,IUGR=cc2)
+cellchat <- mergeCellChat(cc.list,add.names = names(cc.list),cell.prefix = TRUE)
+
+compareInteractions(cellchat,show.legend = F,group = c(1,2),measure = "count")
+compareInteractions(cellchat,show.legend = F,group = c(1,2),measure = "weight")
+
+netVisual_diffInteraction(cellchat,weight.scale = T)
+netVisual_diffInteraction(cellchat,weight.scale = T,measure = "weight")
+
+weight.max <- getMaxWeight(cc.list,attribute = c("idents","weight"))
+par(mfrow=c(1,2))
+for (i in 1:length(cc.list)) {
+  netVisual_circle(cc.list[[i]]@net$weight,weight.scale = T,label.edge = F,
+                   edge.weight.max = weight.max[2],edge.width.max = 12,
+                   title.name = paste0("Number of interaction - ",names(cc.list)[i]))
+}
+
+rankNet(cellchat, mode = "comparison", stacked = T, do.stat = TRUE,color.use = c("#98BCDA","#EBA8A6"))
+rankNet(cellchat, mode = "comparison", stacked = F, do.stat = TRUE)
+
+pathways.show <- c("IL6")
+pairLR.IL6 <- extractEnrichedLR(cellchat2/1,signaling = pathways.show,geneLR.return = FALSE)
+netAnalysis_signalingRole_network(cellchat2/1,signaling = pathways.show,
+                                  width = 15,height = 6,font.size = 10)
+netAnalysis_contribution(cellchat2,signaling = pathways.show)
