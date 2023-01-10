@@ -1,0 +1,281 @@
+## Loading packages
+library(Seurat)
+library(tidyverse)
+library(dplyr)
+library(patchwork)
+library(ggplot2)
+library(harmony)
+library(cowplot)
+library(clustree)
+library(reticulate)
+library(sctransform)
+library(viridis)
+library(tidyr)
+library(magrittr)
+library(reshape2)
+library(readxl)
+library(progeny)
+library(readr)
+library(stringr)
+library(COSG)
+ibrary(MAST)
+
+assays <- dir("soupX/sample_soupx")
+dir <- paste0("soupX/", assays)
+samples_name = c('IUGR1','IUGR2','IUGR3','IUGR4','NBW1', 'NBW2', 'NBW3', 'NBW4')
+scRNAlist <- list()
+for(i in 1:length(dir)){
+  counts <- Read10X(data.dir = dir[i])
+  scRNAlist[[i]] <- CreateSeuratObject(counts, project=samples_name[i],
+                                       min.cells=3, min.features = 200)
+  scRNAlist[[i]] <- RenameCells(scRNAlist[[i]], add.cell.id = samples_name[i])
+}
+names(scRNAlist) <- samples_name
+scRNAlist$IUGR1@meta.data$group <- 'IUGR'
+scRNAlist$IUGR1@meta.data$gender <- 'male'
+scRNAlist$IUGR2@meta.data$group <- 'IUGR'
+scRNAlist$IUGR2@meta.data$gender <- 'male'
+scRNAlist$IUGR3@meta.data$group <- 'IUGR'
+scRNAlist$IUGR3@meta.data$gender <- 'female'
+scRNAlist$IUGR4@meta.data$group <- 'IUGR'
+scRNAlist$IUGR4@meta.data$gender <- 'male'
+scRNAlist$NBW1@meta.data$group <- 'NBW'
+scRNAlist$NBW1@meta.data$gender <- 'male'
+scRNAlist$NBW2@meta.data$group <- 'NBW'
+scRNAlist$NBW2@meta.data$gender <- 'male'
+scRNAlist$NBW3@meta.data$group <- 'NBW'
+scRNAlist$NBW3@meta.data$gender <- 'female'
+scRNAlist$NBW4@meta.data$group <- 'NBW'
+scRNAlist$NBW4@meta.data$gender <- 'male'
+scRNA <- merge(scRNAlist[[1]], scRNAlist[2:length(scRNAlist)])
+
+mt.genes <-read.csv("mt_gene1.csv",header = T)
+kp=mt.genes$gtf %in% rownames(scRNA)
+mt.genes=mt.genes$gtf[kp]
+C<-GetAssayData(object = scRNA, slot = "counts")
+percent.mito <- Matrix::colSums(C[mt.genes,])/Matrix::colSums(C)*100
+scRNA <- AddMetaData(scRNA, percent.mito, col.name = "percent_mito")
+fivenum(scRNA@meta.data$percent_mito)
+ribo_genes=rownames(scRNA)[grep("^Rp[sl]", rownames(scRNA),ignore.case = T)]
+ribo_genes
+scRNA=PercentageFeatureSet(scRNA, "^RP[SL]", col.name = "percent_ribo")
+fivenum(scRNA@meta.data$percent_ribo)
+hb_genes=rownames(scRNA)[grep("^Hb[^(p)]", rownames(scRNA),ignore.case = T)]
+scRNA=PercentageFeatureSet(scRNA, "^HB[^(P)]", col.name = "percent_hb")
+fivenum(scRNA@meta.data$percent_hb)
+feats <- c("nFeature_RNA", "nCount_RNA", "percent_mito", "percent_ribo", "percent_hb")
+
+VlnPlot(scRNA, group.by = "orig.ident", features = feats, pt.size = 0, ncol = 2) + NoLegend()
+VlnPlot(scRNA, group.by = "orig.ident", features = feats, pt.size = 0, ncol = 3, same.y.lims=F) + 
+   NoLegend()
+FeatureScatter(scRNA, "nCount_RNA", "nFeature_RNA", group.by = "orig.ident", pt.size = 0.5)
+ggplot(data = data, aes(x=nFeature_RNA)) + geom_density()
+summary(scRNA@meta.data$nCount_RNA)
+table(scRNA@meta.data$orig.ident)
+table(scRNA@meta.data$group)
+
+scRNA <- subset(scRNA, subset = nFeature_RNA < 6000  & percent_mito < 20)
+table(scRNA@meta.data$orig.ident)
+table(scRNA@meta.data$group)
+feats <- c("nFeature_RNA", "nCount_RNA", "percent_mito", "percent_ribo", "percent_hb")
+VlnPlot(scRNA, group.by = "orig.ident", features = feats, pt.size = 0, ncol = 2) + NoLegend()
+
+nFeature_lower <- 200
+nFeature_upper <- 6000
+nCount_lower <- 400
+nCount_upper <- 90000
+percent_mito_lower <- 0
+percent_mito_upper <- 20
+percent_hb_lower <- 0
+percent_hb_upper <- 45
+qc_std_plot_helper <- function(x) x + 
+  scale_color_viridis() +
+  geom_point(size = 0.01, alpha = 0.3)
+qc_std_plot <- function(scRNA) {
+  qc_data <- as_tibble(FetchData(scRNA, c("nCount_RNA", "nFeature_RNA", "percent_mito", "percent_hb", "percent_ribo")))
+  plot_grid(
+    qc_std_plot_helper(ggplot(qc_data, aes(log2(nCount_RNA), log2(nFeature_RNA), color = percent_mito))) + 
+      geom_hline(yintercept = log2(nFeature_lower), color = "red", linetype = 2) +
+      geom_hline(yintercept = log2(nFeature_upper), color = "red", linetype = 2) +
+      geom_vline(xintercept = log2(nCount_lower), color = "red", linetype = 2) +
+      geom_vline(xintercept = log2(nCount_upper), color = "red", linetype = 2),
+    qc_std_plot_helper(ggplot(qc_data, aes(log2(nCount_RNA), log2(nFeature_RNA), color = percent_hb))) + 
+      geom_hline(yintercept = log2(nFeature_lower), color = "red", linetype = 2) +
+      geom_hline(yintercept = log2(nFeature_upper), color = "red", linetype = 2) +
+      geom_vline(xintercept = log2(nCount_lower), color = "red", linetype = 2) +
+      geom_vline(xintercept = log2(nCount_upper), color = "red", linetype = 2),
+    qc_std_plot_helper(ggplot(qc_data, aes(log2(nCount_RNA), log2(nFeature_RNA), color = percent_ribo))) + 
+      geom_hline(yintercept = log2(nFeature_lower), color = "red", linetype = 2) +
+      geom_hline(yintercept = log2(nFeature_upper), color = "red", linetype = 2) +
+      geom_vline(xintercept = log2(nCount_lower), color = "red", linetype = 2) +
+      geom_vline(xintercept = log2(nCount_upper), color = "red", linetype = 2),
+    qc_std_plot_helper(ggplot(qc_data, aes(log2(nCount_RNA), percent_mito, color = nFeature_RNA))) + 
+      geom_hline(yintercept = percent_mito_lower, color = "red", linetype = 2) +
+      geom_hline(yintercept = percent_mito_upper, color = "red", linetype = 2) +
+      geom_vline(xintercept = log2(nCount_lower), color = "red", linetype = 2) +
+      geom_vline(xintercept = log2(nCount_upper), color = "red", linetype = 2),
+    qc_std_plot_helper(ggplot(qc_data, aes(log2(nCount_RNA), percent_hb, color = nFeature_RNA))) + 
+      geom_vline(xintercept = log2(nCount_lower), color = "red", linetype = 2) +
+      geom_vline(xintercept = log2(nCount_upper), color = "red", linetype = 2),
+    qc_std_plot_helper(ggplot(qc_data, aes(log2(nCount_RNA), percent_ribo, color = nFeature_RNA))) + 
+      geom_vline(xintercept = log2(nCount_lower), color = "red", linetype = 2) +
+      geom_vline(xintercept = log2(nCount_upper), color = "red", linetype = 2),
+    qc_std_plot_helper(ggplot(qc_data, aes(log2(nFeature_RNA), percent_mito, color = nCount_RNA))) + 
+      geom_hline(yintercept = percent_mito_lower, color = "red", linetype = 2) +
+      geom_hline(yintercept = percent_mito_upper, color = "red", linetype = 2) +
+      geom_vline(xintercept = log2(nFeature_lower), color = "red", linetype = 2) +
+      geom_vline(xintercept = log2(nFeature_upper), color = "red", linetype = 2),
+    qc_std_plot_helper(ggplot(qc_data, aes(log2(nFeature_RNA), percent_hb, color = nCount_RNA))) + 
+      geom_vline(xintercept = log2(nFeature_lower), color = "red", linetype = 2) +
+      geom_vline(xintercept = log2(nFeature_upper), color = "red", linetype = 2),
+    qc_std_plot_helper(ggplot(qc_data, aes(log2(nFeature_RNA), percent_ribo, color = nCount_RNA))) + 
+      geom_vline(xintercept = log2(nFeature_lower), color = "red", linetype = 2) +
+      geom_vline(xintercept = log2(nFeature_upper), color = "red", linetype = 2),
+    qc_std_plot_helper(ggplot(qc_data, aes(percent_ribo, percent_mito, color = nCount_RNA))) + 
+      geom_hline(yintercept = percent_mito_lower, color = "red", linetype = 2) +
+      geom_hline(yintercept = percent_mito_upper, color = "red", linetype = 2),
+    qc_std_plot_helper(ggplot(qc_data, aes(percent_ribo, percent_mito, color = nFeature_RNA))) + 
+      geom_hline(yintercept = percent_mito_lower, color = "red", linetype = 2) +
+      geom_hline(yintercept = percent_mito_upper, color = "red", linetype = 2),
+    ggplot(gather(qc_data, key, value), aes(key, value)) +
+      geom_violin() +
+      facet_wrap(~key, scales = "free", ncol = 5),
+    
+    ncol = 3, align = "hv"
+  )
+}
+qc_std_plot(scRNA)
+
+g2m_genes = cc.genes$g2m.genes
+g2m_genes = CaseMatch(search = g2m_genes, match = rownames(scRNA))
+s_genes = cc.genes$s.genes
+s_genes = CaseMatch(search = s_genes, match = rownames(scRNA))
+scRNA <- CellCycleScoring(object=scRNA, g2m.features=g2m_genes, s.features=s_genes)
+scRNA$CC.Difference <- scRNA$S.Score - scRNA$G2M.Score
+scRNA <- SCTransform(scRNA,method="glmGamPoi",vars.to.regress=c("percent_mito","G2M.Score","S.Score")) %>% RunPCA() 
+scRNA <- RunHarmony(scRNA, group.by.vars = "orig.ident",
+                       assay.use = "SCT", max.iter.harmony = 10)
+scRNA <- RunUMAP(scRNA,reduction = "harmony", dims = 1:30, verbose = FALSE)
+
+scRNA <- FindNeighbors(scRNA, reduction = "harmony",dims = 1:30, verbose = FALSE)
+for (res in c(0.01, 0.05, 0.1, 0.2, 0.3, 0.5,0.8,1)) {
+  print(res)
+  scRNA <- FindClusters(scRNA, graph.name = "SCT_snn", 
+                               resolution = res, algorithm = 1)
+}
+colors <- c('#e41a1c','#377eb8','#4daf4a','#984ea3','#ff7f00','#ffff33','#a65628','#f781bf')
+names(colors) <- unique(colnames(scRNA@meta.data)[grep("SCT_snn_res", colnames(scRNA@meta.data))]) 
+clustree(scRNA@meta.data, prefix = "SCT_snn_res.") 
+
+cluster_umap <- plot_grid(ncol = 4, 
+        DimPlot(scRNA, reduction = "umap", group.by = "SCT_snn_res.0.01", label = T) & NoAxes(), 
+        DimPlot(scRNA, reduction = "umap", group.by = "SCT_snn_res.0.05", label = T)& NoAxes(),
+        DimPlot(scRNA, reduction = "umap", group.by = "SCT_snn_res.0.1", label = T) & NoAxes(),
+        DimPlot(scRNA, reduction = "umap", group.by = "SCT_snn_res.0.2", label = T)& NoAxes(),
+        DimPlot(scRNA, reduction = "umap", group.by = "SCT_snn_res.0.3", label = T)& NoAxes(),
+        DimPlot(scRNA, reduction = "umap", group.by = "SCT_snn_res.0.5", label = T) & NoAxes(),
+        DimPlot(scRNA, reduction = "umap", group.by = "SCT_snn_res.0.8", label = T) & NoAxes(), 
+        DimPlot(scRNA, reduction = "umap", group.by = "SCT_snn_res.1", label = T) & NoAxes()
+)
+cluster_umap
+
+Idents(scRNA) <- "SCT_snn_res.0.8"
+DimPlot(scRNA, reduction = "umap",label = T,label.size = 4) +theme(
+  axis.line = element_blank(),
+  axis.ticks = element_blank(),axis.text = element_blank()
+)
+
+DefaultAssay(scRNA) <- "RNA"
+scRNA <- NormalizeData(scRNA, normalization.method = "LogNormalize", scale.factor = 10000)
+scRNA <- ScaleData(scRNA, features = rownames(scRNA))
+marker_cosg <- cosg(scRNA,groups='all',assay='RNA',slot='data',mu=1,n_genes_user=100)
+write.csv(marker_cosg[[1]],file='all_markers.csv')
+
+new.cluster.ids <- c("NK/NKT cells","Erythroid cells", "T cells","NK/NKT cells",
+                     "Monocytes","NK/NKT cells","Endothelial cells","NK/NKT cells","Kupffer cells", 
+                     "Neutrophils", "Kupffer cells", "Neutrophils",
+                     "NK/NKT cells","cDC2","pDC","Myelocytes","Erythroid cells",
+                     "B cells","cDC1","T cells","Cycling NKT cells",
+                     "Cycling T cells","B cells","Mesenchymal cells","Proliferation",
+                     "Hepatocytes","Plasma B cells","HSC","Neutrophil-myeloid progenitors","Basophils",
+                     "Hepatocytes","Endothelial cells","Cholangiocytes")
+names(new.cluster.ids) <- levels(scRNA)
+scRNA <- RenameIdents(scRNA, new.cluster.ids)
+scRNA$celltype <- scRNA@active.ident
+scRNA$celltype.group <- paste(Idents(scRNA), scRNA$group, sep = "_")
+Idents(scRNA) <- "celltype.group"
+color_cluster=c("#6AB3F4","#D459A2","#3A8F93","#FACC13",
+                "#5A7FF8","#3A3AC8",
+                "#8747E0","#12C2C4","#FF7B78",
+                "#B27EEC","#CE1222",
+                "#45CFCF","#EBA8A6","#FF6347","#F14764",
+                "#159CA1","#A21A6D",
+                "#EBA8A6","#e9148f",
+                "#AE6800","#32C35E","#5AC722")
+names(color_cluster)=c("NK/NKT cells", "T cells","Proliferation","Cycling NKT cells",
+                       "Neutrophil-myeloid progenitors","Cycling T cells",
+                       "Monocytes", "cDC2","cDC1",
+                       "B cells","Plasma B cells",
+                       "Mesenchymal cells","HSC","Endothelial cells","Kupffer cells",
+                       "Neutrophils","Myelocytes",
+                       "Hepatocytes","Cholangiocytes",
+                       "pDC","Basophils","Erythroid cells")
+show_col(color_cluster)
+color_sample=c("#37b8c3","#595b5e","#6b7627","#28996b",
+               "#965b6a","#e9148f","#80d08a","#76c3ad")   #"#595b5e","#76c3ad","#80d08a","#d29099","#f2e010"
+names(color_sample)=sort(unique(scRNA@meta.data$orig.ident))
+show_col(color_sample)
+color_group=c("#98BCDA","#EBA8A6")
+names(color_group)=c("NBW","IUGR")
+umap = scRNA@reductions$umap@cell.embeddings %>% 
+  as.data.frame() %>%
+  cbind(cell_type = scRNA@meta.data$celltype)
+df.m=umap[,c(1:3)] 
+df.m <- df.m %>%
+  group_by(cell_type) %>%
+  summarise(UMAP_1 = median(UMAP_1),UMAP_2 = median(UMAP_2))
+ggplot(umap, aes(x= UMAP_1 , y = UMAP_2 ,col = cell_type))+
+  geom_point(size = 0.5,shape=16) +
+  scale_color_manual(values = color_cluster)+ 
+  theme_classic()+
+  theme(panel.grid =element_blank(),
+        panel.border = element_blank(),
+        axis.text.y = element_blank(),
+        axis.ticks.y = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.text.x = element_blank())+
+  labs(x='UMAP1', y='UMAP2')+
+  ggrepel::geom_label_repel(aes(label = cell_type),
+                            data = df.m,
+                            size = 4,
+                            label.size = 1,
+                            segment.color = NA
+  )+ theme_dr()+theme(legend.position = "none") 
+  
+umap$orig.ident <- as.character(scRNA@meta.data[rownames(umap),]$orig.ident)
+ggplot(data = umap, aes(x= UMAP_1 , y = UMAP_2,col = cell_type)) + 
+  geom_point(size = 0.5,shape=16) +
+  scale_color_manual(values = color_cluster) +
+  facet_wrap(~orig.ident, ncol = 4) + 
+  theme_bw() + 
+  theme(panel.grid =element_blank(),
+        axis.ticks.y = element_blank(),
+        axis.ticks.x = element_blank())+
+  theme(legend.title=element_blank(),
+        strip.text.x = element_text(size = 15, face = "bold"),
+        strip.background.x = element_rect(fill = "#F6EDEF"))
+        
+ plot_gene=read.csv("markers.csv",header = T)
+plot_gene$cluster=factor(plot_gene$cluster,levels = unique(plot_gene$cluster))
+plot_gene=plot_gene%>%arrange(cluster,gene)
+scRNA@meta.data$celltype=factor(scRNA@meta.data$celltype,levels = levels(plot_gene$cluster))
+Idents(scRNA)="celltype"
+library(MySeuratWrappers)
+VlnPlot(scRNA, features = unique(plot_gene$gene),
+        stacked=T,pt.size=0,
+        cols = color_cluster,
+        direction = "horizontal", 
+        x.lab = '', y.lab = '')+
+  theme(axis.text.x = element_blank(), 
+        axis.ticks.x = element_blank())
+saveRDS(scRNA,"scRNA.rds")
