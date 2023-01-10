@@ -20,7 +20,7 @@ library(stringr)
 library(COSG)
 ibrary(MAST)
 
-assays <- dir("soupX/sample_soupx")
+assays <- dir("soupX/out")
 dir <- paste0("soupX/", assays)
 samples_name = c('IUGR1','IUGR2','IUGR3','IUGR4','NBW1', 'NBW2', 'NBW3', 'NBW4')
 scRNAlist <- list()
