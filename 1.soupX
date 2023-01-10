@@ -1,1 +1,35 @@
-READ.RDS
+## Loading packages
+library(cowplot)
+library(Seurat)
+library(SoupX)
+library(Matrix)
+
+dir.create("soupX")
+setwd("soupX")
+
+## Preliminary downscaling
+scRNA <- Read10X("")
+standard10x = function(dat,nPCs=50,res=1.0,verbose=FALSE){
+  scRNA = CreateSeuratObject(scRNA)
+  scRNA = NormalizeData(scRNA, verbose = verbose)
+  scRNA = FindVariableFeatures(scRNA, verbose = verbose)
+  scRNA = ScaleData(scRNA, verbose = verbose)
+  scRNA = RunPCA(scRNA, verbose = verbose)
+  scRNA = RunUMAP(scRNA, dims=seq(nPCs),verbose = verbose)
+  scRNA = FindNeighbors(scRNA, dims=seq(nPCs),verbose = verbose)
+  scRNA = FindClusters(scRNA, res = res,verbose = verbose)
+  return(scRNA)
+}
+scRNA <- standard10x(scRNA,nPCs = 30,res = 0.5)
+cl <- data.frame(cell=rownames(scRNA@meta.data),cluster=scRNA@meta.data$seurat_clusters)
+
+## Read matrix data and binning results
+sc <- load10X('sample/')
+sc <- setClusters(sc,cl$cluster)
+
+## Automatic estimation of environmental expressions
+sc = autoEstCont(sc)
+out = adjustCounts(sc)
+
+## Output matrix file
+DropletUtils::write10xCounts("sample_soupx", out)
