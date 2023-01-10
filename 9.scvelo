@@ -1,3 +1,9 @@
+library(Seurat)
+
+KC <- readRDS('KC.rds')
+main.loom <- as.loom(KC,filename="KC.loom",verbose=False)
+write.csv(KC@meta.data,'KC.csv')
+
 #loom   python
 cellranger_gtf=$HOME/reference/scgenome.gtf
 rmsk_gtf=$HOME/reference/Sus_repeat_rmsk.gtf
@@ -11,6 +17,7 @@ import numpy as np
 import matplotlib as plt
 import scanpy as sc
 import os
+import loompy
 
 NBW1 = anndata.read_loom("./data/project1/N1/velocyto/N1.loom")
 NBW2 = anndata.read_loom("./data/project1/N2/velocyto/N2.loom")
@@ -32,6 +39,12 @@ NBW1.obs.index = barcodes
 NBW1.var_names_make_unique()
 
 ldata= NBW1.concatenate([NBW2,NBW4,IUGR1,IUGR2,IUGR4])
+
+adata = sc.read_loom("KC.loom", sparse=True, cleanup=False, X_name='spliced', obs_names='CellID', var_names='Gene', dtype='float32')
+obs= pd.read_csv('KC.csv',delimiter=',', index_col=0)
+adata.obs = obs
+
+adata.write('main.h5ad')
 adata=sc.read_h5ad('./data/project1/KC.h5ad')
 adata= scv.utils.merge(adata,ldata)
 sc.pl.umap(adata,color='celltype1',frameon=False,legend_loc='on data',title='')
