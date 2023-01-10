@@ -1,0 +1,83 @@
+library(NMF)
+library(tidydr)
+
+KC <- subset(scRNA2, idents = "Kupffer cells")
+KC <- NormalizeData(KC, normalization.method = "LogNormalize", scale.factor = 1e4) 
+KC <- FindVariableFeatures(KC, selection.method = 'vst', nfeatures = 6000)
+KC <- ScaleData(KC,rownames(KC),do.center = F) 
+#NMF
+vm <- KC@assays$RNA@scale.data
+vm <- vm[rowSums(vm[, -1]) > 0, ]
+res <- nmf(vm, 3, method = "snmf/r", seed = 'nndsvd') 
+
+fs <- extractFeatures(res,50L)
+fs <- lapply(fs,function(x)rownames(res)[x])
+fs <- do.call("rbind",fs)
+rownames(fs) <- paste0("cluster",1:3)
+DT::datatable(t(fs))
+
+s.f <- 1:3
+
+cell1 <- colnames(KC)
+cell2 <- colnames(coef(res))
+cells <- intersect(cell1,cell2)
+KC <- KC[,cells]
+KC <- RunPCA(KC,verbose = F)
+KC@reductions$nmf <- KC@reductions$pca
+KC@reductions$nmf@cell.embeddings <- t(coef(res)[,cells])
+KC@reductions$nmf@feature.loadings <- basis(res)
+
+KC <- RunUMAP(KC, reduction = 'nmf', dims = s.f) %>% 
+  FindNeighbors(reduction = 'nmf', dims = s.f) %>% FindClusters()
+
+KC$cluster <- apply(NMF::coefficients(res)[s.f,],2,which.max)
+
+p1 <- DimPlot(KC,group.by="cluster",label=T)+ggtitle("Clustered by max loading")
+
+tmp <- data.frame(t(coef(res)), check.names = F)
+colnames(tmp) <- paste0("factor", 1:3)
+KC <- AddMetaData(KC,metadata = tmp)
+FeaturePlot(KC, features = paste0("factor", 1:3), ncol = 3)
+
+
+KC[['nmf']] <- CreateDimReducObject(
+  embeddings = Embeddings(KC[['nmf']]),
+  loadings = Loadings(KC[['nmf']], projected = FALSE),
+  projected = Loadings(KC[['nmf']], projected = TRUE),
+  assay = DefaultAssay(KC[['nmf']]),
+  stdev = Stdev(KC[['nmf']]),
+  key = Key(KC[['nmf']]),
+  global = TRUE,
+  misc = Misc(object = KC[['nmf']])
+)
+
+new.cluster.ids <- c("Inflammatory","Non-inflammatory","Proliferation")
+names(new.cluster.ids) <- levels(KC)
+KC <- RenameIdents(KC, new.cluster.ids)
+KC$celltype1 <- KC@active.ident
+color_cluster=c("#1F77B4","#FF7F0E","#2CA02C")
+names(color_cluster)=c("Inflammatory","Non-inflammatory","Proliferation")
+umap = KC@reductions$umap@cell.embeddings %>% 
+  as.data.frame() %>%
+  cbind(cell_type = KC@meta.data$celltype1)
+df.m=umap[,c(1:3)] 
+df.m <- df.m %>%
+  group_by(cell_type) %>%
+  summarise(UMAP_1 = median(UMAP_1),UMAP_2 = median(UMAP_2))
+ggplot(umap, aes(x= UMAP_1 , y = UMAP_2 ,col = cell_type))+
+  geom_point(size = 1,shape=16) +
+  scale_color_manual(values = color_cluster)+ 
+  theme_classic()+
+  theme(panel.grid =element_blank(),
+        panel.border = element_blank(),
+        axis.text.y = element_blank(),
+        axis.ticks.y = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.text.x = element_blank())+
+  labs(x='UMAP1', y='UMAP2')+
+  ggrepel::geom_label_repel(aes(label = cell_type),
+                            data = df.m,
+                            size = 4,
+                            label.size = 1,
+                            segment.color = NA
+  )+ theme_dr()+theme(legend.position = "none") 
