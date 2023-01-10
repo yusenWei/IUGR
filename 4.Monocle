@@ -1,0 +1,101 @@
+library(monocle)
+
+scRNA.T <- subset(scRNA1,idents="Tc")
+count <- GetAssayData(object = scRNA.T[["RNA"]], slot = "counts") 
+pdata <- KC@meta.data 
+fdata <- data.frame(gene_short_name = row.names(count), row.names = row.names(count))
+
+my_cds <- newCellDataSet(count,
+                         featureData = new("AnnotatedDataFrame", data =fdata),
+                         phenoData = new("AnnotatedDataFrame", data = pdata),
+                         lowerDetectionLimit = 0.1,
+                         expressionFamily = negbinomial.size())
+my_cds <- estimateSizeFactors(my_cds)
+my_cds <- estimateDispersions(my_cds,cores=4, relative_expr = TRUE)
+disp_table <- dispersionTable(my_cds)
+disp.genes <- subset(disp_table, mean_expression >= 0.1 & dispersion_empirical >= 1 * dispersion_fit)$gene_id
+my_cds <- setOrderingFilter(my_cds, disp.genes)
+plot_ordering_genes(my_cds)
+
+my_cds <- reduceDimension(my_cds, reduction_method = "DDRTree", max_components = 2)
+my_cds <- orderCells(my_cds)
+plot_cell_trajectory(my_cds, color_by = "celltype1")+scale_color_gradient(low = "#d95f02",high = "#e72989")
+plot_complex_cell_trajectory(my_cds,x=1,y=2,color_by = "celltype1")+scale_color_gradient(low = "#d95f02",high = "#e72989") + theme(legend.title = element_blank())
+plot_cell_trajectory(my_cds, color_by = "State")
+plot_cell_trajectory(my_cds, color_by = "Pseudotime")
+my_cds <- orderCells(my_cds, root_state = 3)
+plot_cell_trajectory(my_cds, color_by = "State") +
+  facet_wrap(~State,nrow = 1)
+plot_cell_trajectory(my_cds, color_by = "celltype") + facet_wrap(~celltype, nrow = 1)
+plot_genes_in_pseudotime(my_cds["CD163",], color_by = "State")
+
+my_cds1 <- row.names(subset(pData(my_cds),State==c("1","2"))) 
+my_cds1 <- my_cds[,my_cds1]
+table(pData(my_cds1)$celltype)
+pie <- ggplot(pData(my_cds1), aes(x = factor(1), fill =factor(celltype))) +geom_bar(width = 1)
+pie + coord_polar(theta = "y") +theme(axis.title.x = element_blank(), 
+                                      axis.title.y = element_blank())
+                                      
+diff_test <- differentialGeneTest(my_cds[markers,], cores = 4, 
+                                  fullModelFormulaStr = "~sm.ns(Pseudotime)")
+sig_gene_names <- diff_test %>% filter(qval < 0.01) %>% pull(gene_short_name) %>% as.character()
+plot_pseudotime_heatmap(my_cds[unique(sig_gene_names),], num_clusters=3,show_rownames=T, return_heatmap=T,cores = 4)
+clusters <- cutree(p$tree_row,k=3)
+clustering <- data.frame(clusters)
+colnames(clustering) <- "Gene_clusters"
+table(clustering)
+write.csv(clustering,"cluster.csv")
+
+##  BEAM
+beam_res <- BEAM(my_cds[marker,], branch_point = 2, cores = 8)
+beam_res <- beam_res[order(beam_res$qval),]
+beam_res <- beam_res[,c("gene_short_name", "pval", "qval")]
+plot_genes_branched_heatmap(my_cds[row.names(subset(beam_res, qval < 1e-4)),],branch_point = 2, num_clusters = 4, show_rownames = T)
+
+library(monocle3)
+
+scRNA.T <- NormalizeData(scRNA.T, normalization.method = "LogNormalize", scale.factor = 1e4) 
+scRNA.T <- FindVariableFeatures(scRNA.T, selection.method = 'vst', nfeatures = 3000)
+scRNA.T <- ScaleData(scRNA.T,rownames(scRNA.T))
+scRNA.T <- RunPCA(scRNA.T, features = VariableFeatures(object = scRNA.T)) 
+scRNA.T <- RunHarmony(scRNA.T, "orig.ident")
+scRNA.T <- RunUMAP(scRNA.T,dims = 1:30, 
+              reduction = "harmony")
+scRNA.T <- FindNeighbors(scRNA.T, reduction = "harmony",
+                    dims = 1:30) 
+for (res in c(0.01, 0.05, 0.1, 0.2, 0.3, 0.5,0.8,1)) {
+  scRNA.T=FindClusters(scRNA.T, #graph.name = "CCA_snn", 
+                  resolution = res, algorithm = 1)
+}
+apply(scRNA.T@meta.data[,grep("RNA_snn",colnames(scRNA.T@meta.data))],2,table)
+Idents(scRNA.T)<- "RNA_snn_res.0.1"
+DimPlot(scRNA.T, reduction = "umap",
+        label = T,label.box = T)+xlim(-15,15) 
+        
+data <- GetAssayData(KC, assay = 'RNA', slot = 'counts')
+cell_metadata <- KC@meta.data
+gene_annotation <- data.frame(gene_short_name = rownames(data))
+rownames(gene_annotation) <- rownames(data)
+cds <- new_cell_data_set(data,
+                         cell_metadata = cell_metadata,
+                         gene_metadata = gene_annotation)
+cds <- preprocess_cds(cds, num_dim = 50)
+cds <- reduce_dimension(cds, preprocess_method = "PCA")
+plot_cells(cds, reduction_method="UMAP", color_cells_by="celltype1") + ggtitle('cds.umap')
+
+cds.embed <- cds@int_colData$reducedDims$UMAP
+int.embed <- Embeddings(KC, reduction = "umap")
+int.embed <- int.embed[rownames(cds.embed),]
+cds@int_colData$reducedDims$UMAP <- int.embed
+p2 <- plot_cells(cds, reduction_method="UMAP", color_cells_by="celltype1") + ggtitle('int.umap')
+
+cds <- cluster_cells(cds)
+cds <- learn_graph(cds)
+cds = order_cells(cds)
+plot_cells(cds,
+           color_cells_by = "pseudotime",
+           label_cell_groups=FALSE,
+           label_leaves=TRUE,
+           label_branch_points=TRUE,
+           graph_label_size=1.5,
+           group_label_size=4,cell_size=1.5)
